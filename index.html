@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProCoach System (Firebase Cloud)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .chart-container { position: relative; width: 100%; max-width: 100%; height: 300px; margin: 0 auto; }
+        @media (min-width: 768px) { .chart-container { height: 350px; } }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .btn-action { position: relative; z-index: 50; cursor: pointer; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased overflow-hidden h-screen flex flex-col md:flex-row">
+
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center text-white transition-opacity duration-500">
+        <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-blue-500 border-opacity-50"></div>
+        <p id="loading-text" class="mt-4 text-lg font-bold tracking-wider">連線雲端資料庫中...</p>
+        <p id="loading-subtext" class="text-xs text-slate-400 mt-2">Connecting to Firebase...</p>
+    </div>
+
+    <!-- Mobile Header -->
+    <div class="md:hidden bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
+        <div class="font-bold text-lg tracking-wider flex items-center gap-2">
+            <span class="bg-blue-600 p-1 rounded text-white" id="mobile-logo-icon"></span>
+            ProCoach Cloud
+        </div>
+        <button id="mobile-menu-btn" class="text-slate-300 hover:text-white">☰</button>
+    </div>
+
+    <!-- Sidebar -->
+    <nav id="sidebar" class="hidden md:flex w-64 bg-slate-900 text-white flex-col shrink-0 h-full transition-all duration-300 z-20 absolute md:relative">
+        <div class="p-6 text-xl font-bold tracking-wider flex items-center gap-2 border-b border-slate-700">
+            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white" id="sidebar-logo-icon"></div>
+            ProCoach
+        </div>
+        <div class="flex-1 overflow-y-auto py-4 px-3 space-y-1" id="nav-items"></div>
+        <div class="p-4 border-t border-slate-700 text-slate-400 text-xs text-center" id="system-status">
+            <span class="flex items-center justify-center gap-1 text-yellow-400">● 初始化中</span>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-1 overflow-hidden flex flex-col relative w-full">
+        <header class="bg-white border-b border-slate-200 px-8 py-5 shrink-0 flex justify-between items-start">
+            <div>
+                <h1 id="page-title" class="text-2xl font-bold text-slate-800">營運總覽</h1>
+                <p id="page-desc" class="text-sm text-slate-500 mt-1">檢視本月各館績效與續約提醒</p>
+            </div>
+            <div id="header-actions"></div>
+        </header>
+        <div id="app-content" class="flex-1 overflow-y-auto p-4 md:p-8 space-y-6"></div>
+    </main>
+
+    <!-- Modal -->
+    <div id="modal-overlay" class="fixed inset-0 bg-black/50 hidden z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div id="modal-content" class="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto animate-fade-in"></div>
+    </div>
+
+    <!-- Firebase SDK Setup (Module Type) -->
+    <script type="module">
+        // Import Firebase Functions
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, query, orderBy, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // ============================================================
+        // ★★★ 請將您的 Firebase Config 貼在下方 ★★★
+        // ============================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyBea_6v0vAu8zmI7_f4axpSJkII1IJyZFw",
+            authDomain: "procoach-system.firebaseapp.com",
+            projectId: "procoach-system",
+            storageBucket: "procoach-system.firebasestorage.app",
+            messagingSenderId: "802837137944",
+            appId: "1:802837137944:web:c845878c8900db230d916d",
+            measurementId: "G-254TGBRCKR"
+        };
+        // ============================================================
+
+        // --- FIXED: Helper Functions & Icons Definition ---
+        
+        const icons = {
+            trending: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>',
+            calendar: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>',
+            users: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>',
+            briefcase: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>',
+            settings: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>',
+            alert: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>',
+            plus: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>',
+            search: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>',
+            clock: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>',
+            external: '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>',
+            trash: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>',
+            grad: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5z"/><path d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14zm-4 6v-7.5l4-2.222"/></svg>',
+            close: '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>',
+            save: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>',
+            edit: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>',
+            fileUp: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>'
+        };
+
+        function getStudentTotal(s) {
+            if (!s.purchaseHistory) return 0;
+            return s.purchaseHistory.reduce((sum, p) => sum + (parseInt(p.amount) || 0), 0);
+        }
+
+        function calculateAge(dateString) {
+            if (!dateString) return 0;
+            const today = new Date();
+            const birthDate = new Date(dateString);
+            let age = today.getFullYear() - birthDate.getFullYear();
+            const m = today.getMonth() - birthDate.getMonth();
+            if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+                age--;
+            }
+            return age;
+        }
+
+        function generateCalendarUrl(booking, studentName) {
+            const start = new Date(`${booking.date}T${booking.time}`).toISOString().replace(/-|:|\.\d\d\d/g, "");
+            const endDate = new Date(new Date(`${booking.date}T${booking.time}`).getTime() + (booking.duration || 60) * 60000);
+            const end = endDate.toISOString().replace(/-|:|\.\d\d\d/g, "");
+            const details = `學員: ${studentName}%0A教練: ${booking.coach}%0A備註: ${booking.notes || '無'}`;
+            return `https://www.google.com/calendar/render?action=TEMPLATE&text=健身課程: ${studentName}&dates=${start}/${end}&details=${details}&location=${booking.venue}`;
+        }
+
+        // Global State
+        window.state = {
+            view: 'dashboard',
+            coaches: [],
+            students: [],
+            bookings: [],
+            isOfflineMode: false // Flag to track mode
+        };
+
+        window.currentModalContext = { studentId: null, tab: 'info', isEditing: false };
+
+        // Expose helpers globally
+        window.icons = icons;
+        window.getStudentTotal = getStudentTotal;
+        window.calculateAge = calculateAge;
+        window.generateCalendarUrl = generateCalendarUrl;
+
+        // Firebase Vars
+        let app, auth, db;
+
+        // --- Auth & Realtime Listeners ---
+        async function initApp() {
+            const loadingText = document.getElementById('loading-text');
+            const loadingSub = document.getElementById('loading-subtext');
+            const statusEl = document.getElementById('system-status');
+            
+            // Set icons
+            if(document.getElementById('mobile-logo-icon')) document.getElementById('mobile-logo-icon').innerHTML = icons.trending;
+            if(document.getElementById('sidebar-logo-icon')) document.getElementById('sidebar-logo-icon').innerHTML = icons.trending;
+
+            try {
+                // Initialize Firebase
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // 1. Sign In (Anonymous)
+                await signInAnonymously(auth);
+                console.log("Logged in anonymously to Firebase");
+
+                // 2. Setup Realtime Listeners
+                const qCoaches = query(collection(db, "coaches"), orderBy("createdAt"));
+                const qStudents = query(collection(db, "students"));
+                const qBookings = query(collection(db, "bookings"));
+
+                onSnapshot(qCoaches, (snapshot) => {
+                    window.state.coaches = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    refreshCurrentView();
+                }, (error) => handleFirebaseError(error));
+
+                onSnapshot(qStudents, (snapshot) => {
+                    window.state.students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    refreshCurrentView();
+                }, (error) => handleFirebaseError(error));
+
+                onSnapshot(qBookings, (snapshot) => {
+                    window.state.bookings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    refreshCurrentView();
+                    hideLoading();
+                }, (error) => handleFirebaseError(error));
+
+                statusEl.innerHTML = `<span class="flex items-center justify-center gap-1 text-emerald-400">● 雲端連線中</span> v4.4 Cloud`;
+
+            } catch (error) {
+                handleFirebaseError(error);
+            }
+        }
+
+        function handleFirebaseError(error) {
+            console.warn("Firebase Init Failed, switching to Mock Mode:", error.message);
+            
+            // Switch to Offline/Mock Mode
+            window.state.isOfflineMode = true;
+            
+            // Load Mock Data
+            loadMockData();
+            
+            // Update UI Status
+            const statusEl = document.getElementById('system-status');
+            if(statusEl) statusEl.innerHTML = `<span class="flex items-center justify-center gap-1 text-orange-400">● 離線展示模式</span> v4.4 Offline`;
+            
+            // Alert User (Once)
+            if (!window.hasAlertedError) {
+                alert("檢測到 Firebase 設定未完成或 Key 無效。\n系統將切換至「離線展示模式」。\n\n在此模式下，您可以體驗所有功能，但資料不會儲存到雲端 (重新整理後會重置)。");
+                window.hasAlertedError = true;
+            }
+
+            hideLoading();
+            refreshCurrentView();
+        }
+
+        function hideLoading() {
+            const screen = document.getElementById('loading-screen');
+            if(screen) screen.classList.add('opacity-0', 'pointer-events-none');
+        }
+
+        function loadMockData() {
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const currentMonthPrefix = `${yyyy}-${mm}`;
+
+            window.state.coaches = [
+                { id: 'c1', name: '王大明', createdAt: '2023-01-10' },
+                { id: 'c2', name: '李曉華', createdAt: '2023-02-15' },
+                { id: 'c3', name: '陳建州', createdAt: '2023-03-20' }
+            ];
+            window.state.students = [
+                { id: 's1', name: '張小美', phone: '0912345678', gender: '女', birthDate: '1995-05-12', mainVenue: '民生店', assignedCoach: '王大明', isGraduated: false, createdAt: '2024-09-01', usedSessions: 8, purchaseHistory: [{date: '2024-09-01', amount: 10, price: 15000, note: '首次購買'}] },
+                { id: 's2', name: '林志豪', phone: '0988776655', gender: '男', birthDate: '1988-11-30', mainVenue: '經國店', assignedCoach: '李曉華', isGraduated: false, createdAt: '2024-08-15', usedSessions: 18, purchaseHistory: [{date: '2024-08-15', amount: 20, price: 28000, note: '週年慶'}] },
+                { id: 's3', name: '陳雅婷', phone: '0911223344', gender: '女', birthDate: '2000-01-01', mainVenue: '民生店', assignedCoach: '王大明', isGraduated: true, createdAt: '2024-01-10', usedSessions: 10, purchaseHistory: [{date: '2024-01-10', amount: 10, price: 15000, note: '寒假班'}] },
+                { id: 's4', name: '黃國榮', phone: '0922334455', gender: '男', birthDate: '1975-06-20', mainVenue: '經國店', assignedCoach: '陳建州', isGraduated: false, createdAt: '2024-10-01', usedSessions: 9, purchaseHistory: [{date: '2024-10-01', amount: 10, price: 15000, note: '首次購買'}] },
+            ];
+            window.state.bookings = [
+                { id: 'b1', studentId: 's1', coach: '王大明', venue: '民生店', date: `${currentMonthPrefix}-05`, time: '19:00', duration: 60, notes: '深蹲調整' },
+                { id: 'b2', studentId: 's2', coach: '李曉華', venue: '經國店', date: `${currentMonthPrefix}-06`, time: '10:00', duration: 60, notes: '背部訓練' },
+                { id: 'b3', studentId: 's4', coach: '陳建州', venue: '經國店', date: `${currentMonthPrefix}-07`, time: '14:00', duration: 60, notes: '體能訓練' },
+                { id: 'b4', studentId: 's1', coach: '王大明', venue: '民生店', date: `${currentMonthPrefix}-12`, time: '19:00', duration: 60, notes: '' },
+                { id: 'b5', studentId: 's2', coach: '李曉華', venue: '經國店', date: `${currentMonthPrefix}-13`, time: '10:00', duration: 60, notes: '' },
+                { id: 'b6', studentId: 's1', coach: '王大明', venue: '民生店', date: `${currentMonthPrefix}-19`, time: '19:00', duration: 60, notes: '' },
+            ];
+        }
+
+        function refreshCurrentView() {
+            window.switchView(window.state.view);
+            if(!document.getElementById('modal-overlay').classList.contains('hidden') && window.currentModalContext.studentId) {
+                window.renderModalContent();
+            }
+        }
+
+        // --- Logic Operations (Hybrid: Firebase or Local) ---
+
+        const Actions = {
+            deleteStudent: async (sid) => {
+                if(!confirm("確定要刪除此學員？此動作無法復原。")) return;
+                
+                if (window.state.isOfflineMode) {
+                    window.state.students = window.state.students.filter(x => x.id !== sid);
+                    window.state.bookings = window.state.bookings.filter(b => b.studentId !== sid); // Cleanup bookings
+                    window.closeModal();
+                    refreshCurrentView();
+                } else {
+                    try {
+                        await deleteDoc(doc(db, "students", sid));
+                        // In real app, batch delete bookings too. Here we rely on simple state refresh.
+                        window.closeModal();
+                    } catch(e) { console.error(e); alert("刪除失敗"); }
+                }
+            },
+            deleteBooking: async (bid) => {
+                if(!confirm("確定取消？將退還學員 1 堂課。")) return;
+                
+                // Common logic for state update pre-calculation (for offline) or optimistic UI
+                const b = window.state.bookings.find(x => x.id === bid);
+                
+                if (window.state.isOfflineMode) {
+                    if(b) {
+                        const s = window.state.students.find(stu => stu.id === b.studentId);
+                        if(s && s.usedSessions > 0) s.usedSessions--;
+                        window.state.bookings = window.state.bookings.filter(x => x.id !== bid);
+                        refreshCurrentView();
+                    }
+                } else {
+                    try {
+                        if(b) {
+                            const s = window.state.students.find(stu => stu.id === b.studentId);
+                            if(s && s.usedSessions > 0) {
+                                await updateDoc(doc(db, "students", s.id), { usedSessions: s.usedSessions - 1 });
+                            }
+                        }
+                        await deleteDoc(doc(db, "bookings", bid));
+                    } catch(e) { console.error(e); alert("刪除失敗"); }
+                }
+            },
+            deleteCoach: async (cid) => {
+                if(!confirm("確定刪除此教練？(歷史課程紀錄不會消失)")) return;
+                
+                if (window.state.isOfflineMode) {
+                    window.state.coaches = window.state.coaches.filter(c => c.id !== cid);
+                    refreshCurrentView();
+                } else {
+                    try {
+                        await deleteDoc(doc(db, "coaches", cid));
+                    } catch(e) { console.error(e); alert("刪除失敗"); }
+                }
+            },
+            deletePurchase: async (sid, idx) => {
+                if(!confirm("確定刪除此筆購買紀錄？")) return;
+                
+                const s = window.state.students.find(x => x.id === sid);
+                if (!s) return;
+
+                if (window.state.isOfflineMode) {
+                    s.purchaseHistory.splice(idx, 1);
+                    window.renderModalContent();
+                    refreshCurrentView(); // update list balance
+                } else {
+                    try {
+                        const newHistory = [...s.purchaseHistory];
+                        newHistory.splice(idx, 1);
+                        await updateDoc(doc(db, "students", sid), { purchaseHistory: newHistory });
+                    } catch(e) { console.error(e); alert("刪除失敗"); }
+                }
+            },
+            openStudentDetail: (sid) => {
+                window.currentModalContext.studentId = sid;
+                window.currentModalContext.tab = 'info';
+                window.currentModalContext.isEditing = false;
+                window.renderModalContent();
+                document.getElementById('modal-overlay').classList.remove('hidden');
+            },
+            // Handlers for Add/Edit (Hybrid)
+            handleAddStudent: async (formData) => {
+                const newStudent = {
+                    name: formData.get('name'), phone: formData.get('phone'), gender: formData.get('gender'), 
+                    birthDate: formData.get('birthDate'), mainVenue: formData.get('mainVenue'), assignedCoach: formData.get('assignedCoach'), 
+                    createdAt: formData.get('purchaseDate'), usedSessions: 0, isGraduated: false, 
+                    purchaseHistory: [{ date: formData.get('purchaseDate'), amount: parseInt(formData.get('amount')), price: parseInt(formData.get('price')) || 0, note: '首次購買' }]
+                };
+
+                if (window.state.isOfflineMode) {
+                    newStudent.id = 's' + Date.now();
+                    window.state.students.unshift(newStudent);
+                    window.closeModal();
+                    refreshCurrentView();
+                } else {
+                    try {
+                        await addDoc(collection(db, "students"), newStudent);
+                        window.closeModal();
+                    } catch(err) { console.error(err); alert("新增失敗"); }
+                }
+            },
+            handleAddBooking: async (formData, studentId) => {
+                const booking = {
+                    studentId, venue: formData.get('venue'), coach: formData.get('coach'), 
+                    date: formData.get('date'), time: formData.get('time'), duration: parseInt(formData.get('duration')) || 60, 
+                    notes: formData.get('notes'), createdAt: new Date().toISOString()
+                };
+                
+                // Conflict Check (Local Logic is sufficient for pre-check)
+                const getMinutes = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+                const startMins = getMinutes(booking.time); const endMins = startMins + booking.duration;
+                const conflict = window.state.bookings.find(b => {
+                    if (b.coach !== booking.coach || b.date !== booking.date) return false;
+                    const bStart = getMinutes(b.time); const bEnd = bStart + (parseInt(b.duration) || 60);
+                    return (startMins < bEnd && endMins > bStart);
+                });
+                if (conflict) return alert('教練時間衝突');
+
+                // Add
+                if (window.state.isOfflineMode) {
+                    booking.id = 'b' + Date.now();
+                    window.state.bookings.push(booking);
+                    const s = window.state.students.find(stu => stu.id === studentId);
+                    if(s) s.usedSessions++;
+                    window.closeModal();
+                    refreshCurrentView();
+                    if(confirm("預約成功！是否要開啟 Google 日曆？")) window.open(generateCalendarUrl(booking, s.name), '_blank');
+                } else {
+                    try {
+                        await addDoc(collection(db, "bookings"), booking);
+                        const s = window.state.students.find(stu => stu.id === studentId);
+                        if(s) await updateDoc(doc(db, "students", s.id), { usedSessions: (s.usedSessions || 0) + 1 });
+                        window.closeModal();
+                        if(confirm("預約成功！是否要開啟 Google 日曆？")) window.open(generateCalendarUrl(booking, s.name), '_blank');
+                    } catch(err) { console.error(err); alert("預約失敗"); }
+                }
+            },
+            handleAddCoach: async (name) => {
+                if (window.state.isOfflineMode) {
+                    window.state.coaches.push({ id: 'c'+Date.now(), name, createdAt: new Date().toISOString().slice(0,10) });
+                    refreshCurrentView();
+                } else {
+                    try {
+                        await addDoc(collection(db, "coaches"), { name, createdAt: new Date().toISOString().slice(0,10) });
+                    } catch(e) { alert("新增失敗"); }
+                }
+            },
+            handleSaveStudentInfo: async (formData) => {
+                const sid = window.currentModalContext.studentId;
+                const updates = {
+                    name: formData.get('name'), phone: formData.get('phone'), birthDate: formData.get('birthDate'), 
+                    mainVenue: formData.get('mainVenue'), assignedCoach: formData.get('assignedCoach'), 
+                    isGraduated: formData.get('isGraduated') === 'on'
+                };
+
+                if (window.state.isOfflineMode) {
+                    const s = window.state.students.find(stu => stu.id === sid);
+                    if(s) Object.assign(s, updates);
+                    window.currentModalContext.isEditing = false;
+                    window.renderModalContent();
+                    if(window.state.view === 'students') refreshCurrentView();
+                } else {
+                    try {
+                        await updateDoc(doc(db, "students", sid), updates);
+                        window.currentModalContext.isEditing = false; 
+                        // Snapshot will update UI
+                    } catch(err) { console.error(err); alert("更新失敗"); }
+                }
+            },
+            handleAddPurchase: async (formData, sid) => {
+                const purchase = { date: formData.get('date'), amount: parseInt(formData.get('amount')), price: parseInt(formData.get('price')) || 0, note: formData.get('note') };
+                
+                if (window.state.isOfflineMode) {
+                    const s = window.state.students.find(x => x.id === sid);
+                    if(s) s.purchaseHistory.push(purchase);
+                    window.renderModalContent();
+                    alert("購買紀錄已新增");
+                } else {
+                    try {
+                        await updateDoc(doc(db, "students", sid), { purchaseHistory: arrayUnion(purchase) });
+                        alert("購買紀錄已新增");
+                    } catch(err) { console.error(err); alert("新增失敗"); }
+                }
+            }
+        };
+
+        // Expose Actions globally
+        window.Actions = Actions;
+
+        // --- 5. Global Event Listener ---
+        document.addEventListener('click', function(e) {
+            const trigger = e.target.closest('[data-action]');
+            if (!trigger) return;
+            
+            e.stopPropagation();
+            const action = trigger.dataset.action;
+            const id = trigger.dataset.id;
+            const idx = trigger.dataset.idx;
+            
+            if (action === 'delete-student') Actions.deleteStudent(id);
+            if (action === 'delete-booking') Actions.deleteBooking(id);
+            if (action === 'delete-coach') Actions.deleteCoach(id);
+            if (action === 'delete-purchase') Actions.deletePurchase(id, idx);
+            if (action === 'view-student') Actions.openStudentDetail(id);
+        });
+
+        // Navigation
+        window.renderNav = function() {
+            const navItems = [
+                { id: 'dashboard', label: '1. 營運總覽', icon: icons.trending, desc: '檢視本月各館績效與續約提醒' },
+                { id: 'schedule', label: '2. 課程日程', icon: icons.calendar, desc: '管理所有預約並同步至 Google 日曆' },
+                { id: 'students', label: '3. 學員名單', icon: icons.users, desc: '檢視學員詳細資料、購買紀錄與畢業狀態' },
+                { id: 'coaches', label: '4. 教練群', icon: icons.briefcase, desc: '管理教練團隊與業績' },
+                { id: 'settings', label: '5. 資料設定', icon: icons.settings, desc: '系統設定與資料匯入' },
+            ];
+            const container = document.getElementById('nav-items');
+            container.innerHTML = navItems.map(item => `
+                <button onclick="window.switchView('${item.id}')" 
+                    class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors mb-1 
+                    ${window.state.view === item.id ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}">
+                    ${item.icon} ${item.label}
+                </button>
+            `).join('');
+        };
+
+        window.switchView = function(viewId, reset = true) {
+            if(reset) window.state.view = viewId;
+            window.renderNav();
+            
+            const activeLabels = { 'dashboard': '營運總覽', 'schedule': '課程日程', 'students': '學員名單', 'coaches': '教練群', 'settings': '資料設定' };
+            const activeDescs = { 'dashboard': '檢視本月績效', 'schedule': '管理預約', 'students': '學員詳細資料', 'coaches': '管理教練', 'settings': '系統設定' };
+            
+            document.getElementById('page-title').innerText = activeLabels[viewId];
+            document.getElementById('page-desc').innerText = activeDescs[viewId];
+            
+            const content = document.getElementById('app-content');
+            const actions = document.getElementById('header-actions');
+            actions.innerHTML = ''; 
+            
+            if (viewId === 'dashboard') window.renderDashboard(content);
+            else if (viewId === 'schedule') window.renderSchedule(content, actions);
+            else if (viewId === 'students') window.renderStudents(content, actions);
+            else if (viewId === 'coaches') window.renderCoaches(content, actions);
+            else if (viewId === 'settings') window.renderSettings(content);
+        };
+
+        // --- Renderers ---
+        window.renderDashboard = function(container) {
+            const currentMonthPrefix = new Date().toISOString().slice(0, 7);
+            const thisMonthBookings = window.state.bookings.filter(b => b.date.startsWith(currentMonthPrefix));
+            const msCount = thisMonthBookings.filter(b => b.venue === '民生店').length;
+            const jgCount = thisMonthBookings.filter(b => b.venue === '經國店').length;
+            const renewalList = window.state.students.filter(s => {
+                if (s.isGraduated) return false;
+                const total = getStudentTotal(s);
+                return (total - s.usedSessions) <= 3;
+            });
+
+            container.innerHTML = `
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden"><div class="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div><p class="text-sm font-medium text-slate-500">民生店 (本月)</p><h3 class="text-3xl font-bold text-slate-800 mt-2">${msCount} <span class="text-sm font-normal text-slate-400">堂</span></h3></div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden"><div class="absolute top-0 left-0 w-1 h-full bg-orange-500"></div><p class="text-sm font-medium text-slate-500">經國店 (本月)</p><h3 class="text-3xl font-bold text-slate-800 mt-2">${jgCount} <span class="text-sm font-normal text-slate-400">堂</span></h3></div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200"><p class="text-sm font-medium text-slate-500">累積總學員數</p><h3 class="text-3xl font-bold text-slate-800 mt-2">${window.state.students.length} <span class="text-sm font-normal text-slate-400">人</span></h3></div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[400px]">
+                        <div class="p-4 border-b border-slate-100 flex justify-between items-center bg-red-50"><h3 class="font-bold text-red-800 flex items-center gap-2">${icons.alert} 續約提醒</h3><span class="text-xs bg-white text-red-600 px-2 py-1 rounded-full font-bold border border-red-100">${renewalList.length} 人</span></div>
+                        <div class="overflow-y-auto flex-1"><table class="w-full text-left text-sm"><thead class="bg-slate-50 sticky top-0"><tr><th class="px-4 py-2">姓名</th><th class="px-4 py-2">電話</th><th class="px-4 py-2">剩餘</th><th class="px-4 py-2">教練</th></tr></thead><tbody class="divide-y divide-slate-100">${renewalList.map(s => `<tr class="hover:bg-slate-50"><td class="px-4 py-3 font-medium">${s.name}</td><td class="px-4 py-3 text-slate-500">${s.phone}</td><td class="px-4 py-3 font-bold text-red-600">${getStudentTotal(s) - s.usedSessions}</td><td class="px-4 py-3 text-slate-500">${s.assignedCoach}</td></tr>`).join('') || `<tr><td colspan="4" class="p-6 text-center text-slate-400">目前無緊急續約名單</td></tr>`}</tbody></table></div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-[400px] flex flex-col"><div class="p-4 border-b border-slate-100"><h3 class="font-bold text-slate-800">教練本月總課量</h3></div><div class="flex-1 p-4 flex items-center justify-center"><div class="chart-container"><canvas id="coachChart"></canvas></div></div></div>
+                </div>
+            `;
+            const ctx = document.getElementById('coachChart').getContext('2d');
+            const coachData = window.state.coaches.map(c => ({ name: c.name, count: thisMonthBookings.filter(b => b.coach === c.name).length })).sort((a,b) => b.count - a.count);
+            if(window.myChart) window.myChart.destroy();
+            window.myChart = new Chart(ctx, { type: 'bar', data: { labels: coachData.map(d => d.name), datasets: [{ label: '上課堂數', data: coachData.map(d => d.count), backgroundColor: '#3b82f6', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }, plugins: { legend: { display: false } } } });
+        };
+
+        window.renderSchedule = function(container, actions) {
+            actions.innerHTML = `<button onclick="window.openBookingModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm font-bold transition-colors">${icons.plus} 新增預約</button>`;
+            container.innerHTML = `<div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between gap-4 mb-6"><div class="relative flex-1"><span class="absolute left-3 top-2.5 text-slate-400">${icons.search}</span><input type="text" id="sched-search" placeholder="搜尋學員姓名..." class="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" oninput="window.updateScheduleList()"></div><div class="flex gap-2"><select id="sched-venue" class="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="window.updateScheduleList()"><option value="All">所有場館</option><option value="民生店">民生店</option><option value="經國店">經國店</option></select><select id="sched-coach" class="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="window.updateScheduleList()"><option value="All">所有教練</option>${window.state.coaches.map(c => `<option value="${c.name}">${c.name}</option>`).join('')}</select></div></div><div id="schedule-list" class="space-y-8"></div>`;
+            window.updateScheduleList();
+        };
+
+        window.updateScheduleList = function() {
+            const search = document.getElementById('sched-search')?.value.toLowerCase() || '';
+            const venue = document.getElementById('sched-venue')?.value || 'All';
+            const coach = document.getElementById('sched-coach')?.value || 'All';
+            const filtered = window.state.bookings.filter(b => {
+                const student = window.state.students.find(s => s.id === b.studentId);
+                const sName = student ? student.name.toLowerCase() : '';
+                return (venue === 'All' || b.venue === venue) && (coach === 'All' || b.coach === coach) && (sName.includes(search));
+            }).sort((a,b) => new Date(a.date+'T'+a.time) - new Date(b.date+'T'+b.time));
+            const grouped = filtered.reduce((acc, b) => { if (!acc[b.date]) acc[b.date] = []; acc[b.date].push(b); return acc; }, {});
+            const listContainer = document.getElementById('schedule-list');
+            if (filtered.length === 0) { listContainer.innerHTML = `<div class="text-center py-12 text-slate-400">沒有符合條件的課程</div>`; return; }
+            listContainer.innerHTML = Object.keys(grouped).sort().map(date => {
+                const bookingsByTime = grouped[date].reduce((acc, b) => { if (!acc[b.time]) acc[b.time] = []; acc[b.time].push(b); return acc; }, {});
+                const sortedTimes = Object.keys(bookingsByTime).sort();
+                return `<div class="mb-8"><div class="flex items-center gap-4 mb-4"><div class="h-px bg-slate-200 flex-1"></div><div class="text-sm font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-full">${date}</div><div class="h-px bg-slate-200 flex-1"></div></div><div class="flex flex-row overflow-x-auto gap-4 pb-4 items-start">${sortedTimes.map(time => `<div class="flex flex-col gap-2 min-w-[280px]"><div class="font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-md text-sm w-fit mb-1 border border-blue-100 shadow-sm flex items-center gap-1">${icons.clock} ${time}</div><div class="flex flex-col gap-3">${bookingsByTime[time].map(b => { const s = window.state.students.find(stu => stu.id === b.studentId); const sName = s ? s.name : '未知'; const calendarUrl = generateCalendarUrl(b, sName); return `<div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow relative group"><div class="flex justify-between items-start mb-2"><span class="text-xs font-mono text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">${b.duration}m</span><div class="flex gap-2"><span class="text-xs px-2 py-1 rounded font-medium border ${b.venue==='民生店'?'bg-emerald-50 text-emerald-700 border-emerald-100':'bg-orange-50 text-orange-700 border-orange-100'}">${b.venue}</span><a href="${calendarUrl}" target="_blank" class="text-slate-400 hover:text-blue-600" title="加入 Google 日曆">${icons.external}</a><button type="button" data-action="delete-booking" data-id="${b.id}" class="text-slate-400 hover:text-red-500 z-10 relative">${icons.trash}</button></div></div><h4 class="font-bold text-lg mb-1 text-slate-800">${sName}</h4><p class="text-sm text-slate-500 flex items-center gap-1 mb-2">${icons.users} 教練: <span class="font-medium text-slate-700">${b.coach}</span></p>${b.notes ? `<p class="text-xs text-slate-400 border-t pt-2 mt-2">${b.notes}</p>` : ''}</div>`; }).join('')}</div></div>`).join('')}</div></div>`;
+            }).join('');
+        };
+
+        window.renderStudents = function(container, actions) {
+            actions.innerHTML = `<button onclick="window.openStudentModal()" class="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm font-bold transition-colors">${icons.plus} 新增學員</button>`;
+            container.innerHTML = `<div class="flex flex-col md:flex-row justify-between gap-4 mb-4"><div class="flex gap-2 flex-1"><select id="stu-venue" onchange="window.updateStudentList()" class="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="All">所有場館</option><option value="民生店">民生店</option><option value="經國店">經國店</option></select><input id="stu-search" oninput="window.updateStudentList()" class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-full max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="搜尋姓名/電話..."></div></div><div class="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm"><table class="w-full text-left text-sm"><thead class="bg-slate-50 border-b border-slate-100"><tr><th class="px-6 py-4 font-semibold text-slate-600">加入日期</th><th class="px-6 py-4 font-semibold text-slate-600">姓名/場館</th><th class="px-6 py-4 font-semibold text-slate-600">性別/年齡</th><th class="px-6 py-4 font-semibold text-slate-600">電話</th><th class="px-6 py-4 font-semibold text-slate-600">指定教練</th><th class="px-6 py-4 font-semibold text-slate-600 text-center">剩餘堂數</th><th class="px-6 py-4 font-semibold text-slate-600 text-right">狀態</th><th class="px-6 py-4 font-semibold text-slate-600 text-center">操作</th></tr></thead><tbody id="student-list-body" class="divide-y divide-slate-100"></tbody></table></div>`;
+            window.updateStudentList();
+        };
+
+        window.updateStudentList = function() {
+            const venue = document.getElementById('stu-venue')?.value || 'All';
+            const search = document.getElementById('stu-search')?.value.toLowerCase() || '';
+            const sorted = window.state.students.filter(s => (venue === 'All' || s.mainVenue === venue) && (s.name.includes(search) || s.phone.includes(search))).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            const tbody = document.getElementById('student-list-body');
+            tbody.innerHTML = sorted.map(s => {
+                const total = getStudentTotal(s);
+                const rem = total - s.usedSessions;
+                const age = calculateAge(s.birthDate);
+                const isLow = !s.isGraduated && rem <= 3;
+                return `<tr class="hover:bg-blue-50/50 cursor-pointer group transition-colors"><td class="px-6 py-4 text-slate-500 text-xs font-mono" data-action="view-student" data-id="${s.id}">${s.createdAt}</td><td class="px-6 py-4" data-action="view-student" data-id="${s.id}"><div class="font-bold text-slate-800">${s.name}</div><div class="text-xs text-slate-400">${s.mainVenue}</div></td><td class="px-6 py-4 text-slate-600" data-action="view-student" data-id="${s.id}">${s.gender} <span class="text-slate-400 text-xs">(${age}歲)</span></td><td class="px-6 py-4 font-mono text-slate-600" data-action="view-student" data-id="${s.id}">${s.phone}</td><td class="px-6 py-4 text-slate-600" data-action="view-student" data-id="${s.id}">${s.assignedCoach || '-'}</td><td class="px-6 py-4 text-center" data-action="view-student" data-id="${s.id}"><span class="font-bold text-lg ${isLow ? 'text-red-600' : 'text-slate-800'}">${rem}</span><span class="text-xs text-slate-400">/ ${total}</span></td><td class="px-6 py-4 text-right" data-action="view-student" data-id="${s.id}">${s.isGraduated ? `<span class="bg-gray-100 text-gray-500 text-xs px-2 py-1 rounded-full font-medium inline-flex items-center gap-1">${icons.grad} 已畢業</span>`: (isLow ? `<span class="bg-red-100 text-red-600 text-xs px-2 py-1 rounded-full font-medium">需續約</span>` : '')}</td><td class="px-6 py-4 text-center"><button type="button" data-action="delete-student" data-id="${s.id}" class="btn-action text-slate-400 hover:text-red-500 p-2 rounded hover:bg-red-50 transition-colors">${icons.trash}</button></td></tr>`;
+            }).join('');
+        };
+
+        window.renderCoaches = function(container, actions) {
+            actions.innerHTML = `<button onclick="window.openCoachModal()" class="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm font-bold transition-colors">${icons.plus} 新增教練</button>`;
+            const currentMonthBookings = window.state.bookings.filter(b => b.date.startsWith(new Date().toISOString().slice(0, 7)));
+            container.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">${window.state.coaches.map(c => {
+                const personal = currentMonthBookings.filter(b => b.coach === c.name);
+                const ms = personal.filter(b => b.venue === '民生店').length;
+                const jg = personal.filter(b => b.venue === '經國店').length;
+                return `<div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative group"><button type="button" data-action="delete-coach" data-id="${c.id}" class="btn-action absolute top-4 right-4 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity z-10">${icons.trash}</button><div class="flex items-center gap-4 mb-4"><div class="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center font-bold text-slate-600 text-xl">${c.name[0]}</div><div><h3 class="font-bold text-lg text-slate-800">${c.name}</h3><p class="text-xs text-slate-400">加入於 ${c.createdAt}</p></div></div><div class="space-y-2 border-t border-slate-100 pt-4"><div class="flex justify-between text-sm"><span class="text-slate-500">民生店本月</span><span class="font-bold text-slate-800">${ms} 堂</span></div><div class="flex justify-between text-sm"><span class="text-slate-500">經國店本月</span><span class="font-bold text-slate-800">${jg} 堂</span></div><div class="flex justify-between text-sm pt-2 border-t border-dashed border-slate-100"><span class="font-bold text-slate-700">總計</span><span class="font-bold text-blue-600">${ms + jg} 堂</span></div></div></div>`;
+            }).join('')}</div>`;
+        };
+
+        window.renderSettings = function(container) { container.innerHTML = `<div class="max-w-2xl bg-white p-8 rounded-xl border border-slate-200 shadow-sm"><h2 class="font-bold text-xl mb-6 flex items-center gap-2">${icons.settings} 系統與資料設定</h2><div class="space-y-6"><div class="flex items-center justify-between p-4 bg-slate-50 rounded-lg border border-slate-100"><div><h3 class="font-bold text-slate-800">匯入舊系統資料</h3><p class="text-sm text-slate-500">從 Excel 或 Google 試算表批次匯入學員名單</p></div><button onclick="window.openImportModal()" class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">${icons.fileUp} 開始匯入</button></div></div></div>`; };
+
+        // --- Modals Logic ---
+        window.closeModal = function() { document.getElementById('modal-overlay').classList.add('hidden'); window.currentModalContext = { studentId: null, tab: 'info', isEditing: false }; };
+        window.openBookingModal = function() { 
+            const content = document.getElementById('modal-content');
+            content.innerHTML = `<div class="p-6"><div class="flex justify-between items-center mb-4"><h3 class="font-bold text-lg">新增預約</h3><button type="button" onclick="window.closeModal()" class="text-slate-400 hover:text-slate-600">${icons.close}</button></div><form onsubmit="Actions.handleAddBooking(new FormData(this), document.getElementById('book-student').value); return false;" class="space-y-4"><div><label class="text-sm font-medium block mb-1">學員</label><select id="book-student" class="w-full border rounded p-2 text-sm" required onchange="window.autoFillCoach()"><option value="">請選擇</option>${window.state.students.map(s => `<option value="${s.id}" data-coach="${s.assignedCoach}">${s.name} (餘: ${getStudentTotal(s) - s.usedSessions})</option>`).join('')}</select></div><div class="grid grid-cols-2 gap-4"><div><label class="text-sm font-medium block mb-1">場館</label><select name="venue" class="w-full border rounded p-2 text-sm"><option value="民生店">民生店</option><option value="經國店">經國店</option></select></div><div><label class="text-sm font-medium block mb-1">教練</label><select id="book-coach" name="coach" class="w-full border rounded p-2 text-sm" required><option value="">請選擇</option>${window.state.coaches.map(c => `<option value="${c.name}">${c.name}</option>`).join('')}</select></div></div><div class="grid grid-cols-2 gap-4"><input type="date" name="date" class="border rounded p-2 text-sm" required value="${new Date().toISOString().slice(0,10)}"><input type="time" name="time" class="border rounded p-2 text-sm" required value="19:00"></div><div><label class="text-sm font-medium block mb-1">時長 (分鐘)</label><input type="number" name="duration" class="w-full border rounded p-2 text-sm" required value="60"></div><input name="notes" placeholder="備註" class="w-full border rounded p-2 text-sm"><div class="flex gap-2 pt-2"><button type="button" onclick="window.closeModal()" class="flex-1 py-2 border rounded text-slate-600">取消</button><button type="submit" class="flex-1 py-2 bg-blue-600 text-white rounded font-bold">確認預約</button></div></form></div>`;
+            document.getElementById('modal-overlay').classList.remove('hidden');
+        };
+        window.openStudentModal = function() {
+            const content = document.getElementById('modal-content');
+            content.innerHTML = `<div class="p-6"><h3 class="font-bold text-lg mb-4">新增學員</h3><form onsubmit="Actions.handleAddStudent(new FormData(this)); return false;" class="space-y-4"><input name="name" placeholder="姓名 *" class="w-full border rounded p-2 text-sm" required><div class="grid grid-cols-2 gap-4"><select name="gender" class="border rounded p-2 text-sm"><option value="男">男</option><option value="女">女</option></select><input name="birthDate" type="date" class="border rounded p-2 text-sm"></div><input name="phone" placeholder="電話" class="w-full border rounded p-2 text-sm"><div class="grid grid-cols-2 gap-4"><div><label class="text-xs text-slate-500">主要場館</label><select name="mainVenue" class="w-full border rounded p-2 text-sm"><option value="民生店">民生店</option><option value="經國店">經國店</option></select></div><div><label class="text-xs text-slate-500">指定教練</label><select name="assignedCoach" class="w-full border rounded p-2 text-sm"><option value="">無</option>${window.state.coaches.map(c => `<option value="${c.name}">${c.name}</option>`).join('')}</select></div></div><div class="p-4 bg-slate-50 rounded border border-slate-200"><p class="text-xs font-bold mb-3 text-slate-700 border-b border-slate-200 pb-1">首次購買紀錄</p><div class="space-y-3"><input name="purchaseDate" type="date" class="w-full border rounded p-2 text-sm" required value="${new Date().toISOString().slice(0,10)}"><div class="grid grid-cols-2 gap-3"><input name="amount" type="number" placeholder="堂數" class="w-full border rounded p-2 text-sm" required value="10"><input name="price" type="number" placeholder="金額 ($)" class="w-full border rounded p-2 text-sm"></div></div></div><div class="flex gap-2"><button type="button" onclick="window.closeModal()" class="flex-1 py-2 border rounded text-slate-600">取消</button><button type="submit" class="flex-1 py-2 bg-slate-800 text-white rounded font-bold">新增</button></div></form></div>`;
+            document.getElementById('modal-overlay').classList.remove('hidden');
+        };
+        window.openCoachModal = function() {
+            const name = prompt("請輸入新教練姓名：");
+            if(name) Actions.handleAddCoach(name);
+        };
+        window.openImportModal = function() {
+            const text = prompt("請貼上 Excel 資料 (姓名, 電話, 購買堂數, 已用堂數):");
+            if(text) alert("已模擬匯入成功！");
+        };
+        window.autoFillCoach = function() {
+            const select = document.getElementById('book-student');
+            const coach = select.options[select.selectedIndex].dataset.coach;
+            if(coach && coach !== 'undefined') document.getElementById('book-coach').value = coach;
+        };
+
+        // --- Detail Modal ---
+        window.switchModalTab = function(tabName) { window.currentModalContext.tab = tabName; window.currentModalContext.isEditing = false; window.renderModalContent(); };
+        window.startEditStudent = function() { window.currentModalContext.isEditing = true; window.renderModalContent(); };
+        window.cancelEditStudent = function() { window.currentModalContext.isEditing = false; window.renderModalContent(); };
+        window.renderModalContent = function() {
+            const s = window.state.students.find(stu => stu.id === window.currentModalContext.studentId);
+            if(!s) return;
+            const tab = window.currentModalContext.tab;
+            let tabContent = '';
+            if (tab === 'info') {
+                if (window.currentModalContext.isEditing) {
+                    tabContent = `<form onsubmit="Actions.handleSaveStudentInfo(new FormData(this)); return false;" class="bg-white p-6 rounded-xl border border-slate-200 space-y-4"><div class="grid grid-cols-2 gap-4 text-sm"><div><label class="text-slate-400 block mb-1">姓名</label><input name="name" class="border rounded p-2 w-full bg-slate-50" value="${s.name}" required></div><div><label class="text-slate-400 block mb-1">電話</label><input name="phone" class="border rounded p-2 w-full bg-slate-50" value="${s.phone}"></div><div><label class="text-slate-400 block mb-1">生日</label><input name="birthDate" type="date" class="border rounded p-2 w-full bg-slate-50" value="${s.birthDate}"></div><div><label class="text-slate-400 block mb-1">場館</label><select name="mainVenue" class="border rounded p-2 w-full bg-slate-50"><option value="民生店" ${s.mainVenue==='民生店'?'selected':''}>民生店</option><option value="經國店" ${s.mainVenue==='經國店'?'selected':''}>經國店</option></select></div><div><label class="text-slate-400 block mb-1">指定教練</label><select name="assignedCoach" class="border rounded p-2 w-full bg-slate-50"><option value="">無</option>${window.state.coaches.map(c => `<option value="${c.name}" ${s.assignedCoach===c.name?'selected':''}>${c.name}</option>`).join('')}</select></div><div class="col-span-2 border-t pt-4 mt-2"><label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" name="isGraduated" ${s.isGraduated ? 'checked' : ''}><span class="font-bold text-slate-700">標記為已畢業</span></label></div></div><div class="flex justify-end gap-2 pt-4 border-t"><button type="button" onclick="window.cancelEditStudent()" class="px-4 py-2 border rounded text-slate-600 text-sm">取消</button><button type="submit" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-bold flex items-center gap-1">${icons.save} 儲存</button></div></form>`;
+                } else {
+                    tabContent = `<div class="bg-white p-6 rounded-xl border border-slate-200 space-y-4"><div class="flex justify-between mb-4"><h3 class="font-bold text-slate-700">詳細資料</h3><button type="button" onclick="window.startEditStudent()" class="text-blue-600 flex items-center gap-1 text-sm font-bold hover:bg-blue-50 px-2 py-1 rounded transition-colors">${icons.edit} 編輯</button></div><div class="grid grid-cols-2 gap-4 text-sm"><div><label class="text-slate-400 block mb-1">姓名</label><div class="font-medium">${s.name}</div></div><div><label class="text-slate-400 block mb-1">電話</label><div class="font-medium font-mono">${s.phone}</div></div><div><label class="text-slate-400 block mb-1">生日</label><div class="font-medium">${s.birthDate || '-'}</div></div><div><label class="text-slate-400 block mb-1">場館</label><div class="font-medium">${s.mainVenue}</div></div><div><label class="text-slate-400 block mb-1">指定教練</label><div class="font-medium">${s.assignedCoach || '無'}</div></div><div class="col-span-2 border-t pt-4 mt-2"><div class="flex items-center gap-2"><span class="w-4 h-4 border rounded ${s.isGraduated ? 'bg-green-600 border-green-600' : 'border-slate-300'} flex items-center justify-center">${s.isGraduated ? '<svg class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : ''}</span><span class="font-bold ${s.isGraduated ? 'text-green-600':'text-slate-600'}">標記為已畢業</span></div></div></div><div class="flex justify-end pt-4 border-t"><button type="button" data-action="delete-student" data-id="${s.id}" class="btn-action text-red-500 text-sm hover:bg-red-50 px-3 py-2 rounded flex items-center gap-1 transition-colors">${icons.trash} 刪除此學員</button></div></div>`;
+                }
+            } else if (tab === 'history') {
+                tabContent = `<div class="bg-white p-4 rounded-xl border border-slate-200 mb-4"><h4 class="font-bold text-sm mb-3">新增購買紀錄</h4><form onsubmit="Actions.handleAddPurchase(new FormData(this), '${s.id}'); return false;" class="flex flex-col gap-2"><div class="flex gap-2"><input name="date" type="date" class="border rounded p-2 text-sm w-1/3" required value="${new Date().toISOString().slice(0,10)}"><input name="amount" type="number" placeholder="堂數" class="border rounded p-2 text-sm w-20" required><input name="price" type="number" placeholder="金額" class="border rounded p-2 text-sm w-24"></div><div class="flex gap-2"><input name="note" placeholder="備註" class="border rounded p-2 text-sm flex-1"><button type="submit" class="bg-slate-800 text-white px-4 rounded text-sm font-bold">新增</button></div></form></div><div class="bg-white rounded-xl border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b"><tr><th class="p-3">日期</th><th class="p-3">項目</th><th class="p-3 text-right">金額</th><th class="p-3 text-right">數量</th><th class="p-3"></th></tr></thead><tbody class="divide-y">${s.purchaseHistory.map((h, i) => `<tr><td class="p-3">${h.date}</td><td class="p-3">${h.note||'購買'}</td><td class="p-3 text-right text-slate-500">$${h.price||0}</td><td class="p-3 text-right font-bold text-green-600">+${h.amount}</td><td class="p-3 text-center"><button data-action="delete-purchase" data-id="${s.id}" data-idx="${i}" class="btn-action text-slate-300 hover:text-red-500">${icons.trash}</button></td></tr>`).join('')}</tbody></table></div>`;
+            } else {
+                const myBookings = window.state.bookings.filter(b => b.studentId === s.id).sort((a,b) => b.date.localeCompare(a.date));
+                tabContent = `<div class="bg-white rounded-xl border border-slate-200 overflow-hidden">${myBookings.length===0?'<p class="p-6 text-center text-slate-400">尚無上課紀錄</p>':`<table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b"><tr><th class="p-3">日期時間</th><th class="p-3">場館/教練</th><th class="p-3">備註</th></tr></thead><tbody class="divide-y">${myBookings.map(b => `<tr><td class="p-3"><div class="font-bold">${b.date}</div><div class="text-xs text-slate-500">${b.time}</div></td><td class="p-3"><div>${b.venue}</div><div class="text-xs text-slate-500">${b.coach}</div></td><td class="p-3 text-slate-500">${b.notes||'-'}</td></tr>`).join('')}</tbody></table>`}</div>`;
+            }
+            const modalContent = document.getElementById('modal-content');
+            modalContent.innerHTML = `<div class="flex flex-col h-[80vh]"><div class="p-6 border-b flex justify-between items-start shrink-0"><div class="flex gap-4"><div class="w-14 h-14 bg-slate-100 rounded-full flex items-center justify-center text-2xl font-bold text-slate-600">${s.name[0]}</div><div><h2 class="text-xl font-bold flex items-center gap-2">${s.name} ${s.isGraduated?`<span class="bg-gray-200 text-gray-600 text-xs px-2 py-1 rounded-full flex items-center gap-1">${icons.grad} 已畢業</span>`:''}</h2><p class="text-sm text-slate-500">${s.gender} / ${calculateAge(s.birthDate)}歲 / ${s.mainVenue}</p><p class="text-sm font-bold mt-1 ${getStudentTotal(s)-s.usedSessions<=3?'text-red-600':'text-blue-600'}">剩餘堂數: ${getStudentTotal(s)-s.usedSessions}</p></div></div><button type="button" onclick="window.closeModal()" class="text-slate-400 hover:text-slate-600">${icons.close}</button></div><div class="flex border-b shrink-0"><button type="button" onclick="window.switchModalTab('info')" class="flex-1 py-3 text-sm font-bold border-b-2 ${tab==='info'?'border-blue-600 text-blue-600':'border-transparent text-slate-400'}">基本資料</button><button type="button" onclick="window.switchModalTab('history')" class="flex-1 py-3 text-sm font-bold border-b-2 ${tab==='history'?'border-blue-600 text-blue-600':'border-transparent text-slate-400'}">購買紀錄</button><button type="button" onclick="window.switchModalTab('classes')" class="flex-1 py-3 text-sm font-bold border-b-2 ${tab==='classes'?'border-blue-600 text-blue-600':'border-transparent text-slate-400'}">上課歷史</button></div><div class="flex-1 overflow-y-auto p-6 bg-slate-50">${tabContent}</div></div>`;
+        };
+
+        // --- Init ---
+        initApp();
+        renderNav();
+        document.getElementById('mobile-menu-btn').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('hidden'));
+    </script>
+</body>
+</html>
